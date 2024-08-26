@@ -1,11 +1,14 @@
-import "./Chess.css";
+// ChessGame.jsx
 import React, { useEffect, useState } from 'react';
+import "./Chess.css";
 
 const ChessGame = () => {
     const BOARD_SIZE = 5;
     const PLAYER_A_CHARACTERS = ['P1', 'P2', 'H1', 'H2', 'P3'];
     const PLAYER_B_CHARACTERS = ['P1', 'P2', 'H1', 'H2', 'P3'];
 
+    const [roomId, setRoomId] = useState('');
+    const [isConnected, setIsConnected] = useState(false);
     const [gameState, setGameState] = useState({
         board: Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null)),
         currentPlayer: 'A',
@@ -13,23 +16,62 @@ const ChessGame = () => {
     });
     const [selectedCharacter, setSelectedCharacter] = useState(null);
     const [moveHistory, setMoveHistory] = useState([]);
+    const [socket, setSocket] = useState(null);
 
     useEffect(() => {
-        const initialBoard = Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null));
+        if (roomId) {
+            const ws = new WebSocket(`ws://localhost:8081?roomId=${roomId}`);
+            setSocket(ws);
 
-        PLAYER_A_CHARACTERS.forEach((char, index) => {
-            initialBoard[index][0] = `A${char}`;
-        });
+            ws.onopen = () => {
+                console.log(`WebSocket connection established for room ID: ${roomId}`);
+                setIsConnected(true);
+            };
 
-        PLAYER_B_CHARACTERS.forEach((char, index) => {
-            initialBoard[index][BOARD_SIZE - 1] = `B${char}`;
-        });
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('Received message:', data);
 
-        setGameState(prevState => ({
-            ...prevState,
-            board: initialBoard
-        }));
-    }, []);
+                if (data.type === 'boardState') {
+                    console.log('Updating board state:', data.boardState);
+                    setGameState(prevState => ({
+                        ...prevState,
+                        board: data.boardState,
+                        currentPlayer: data.currentPlayer
+                    }));
+                } else if (data.type === 'move') {
+                    console.log(`Player ${data.currentPlayer} moved ${data.character} from (${data.fromX}, ${data.fromY}) to (${data.toX}, ${data.toY})`);
+                    setGameState(prevState => ({
+                        ...prevState,
+                        board: data.boardState,
+                        currentPlayer: data.currentPlayer
+                    }));
+
+                    const fromLabel = getLabelForPosition(data.fromX, data.fromY);
+                    const toLabel = getLabelForPosition(data.toX, data.toY);
+                    setMoveHistory(prevHistory => [
+                        ...prevHistory,
+                        `Player ${data.currentPlayer} moved ${data.character} from ${fromLabel} to ${toLabel}`
+                    ]);
+                } else if (data.error) {
+                    console.error('Error from server:', data.error);
+                    setGameState(prevState => ({
+                        ...prevState,
+                        message: data.error
+                    }));
+                }
+            };
+
+            ws.onclose = () => {
+                console.log(`WebSocket connection closed for room ID: ${roomId}`);
+                setIsConnected(false);
+            };
+
+            return () => {
+                ws.close();
+            };
+        }
+    }, [roomId]);
 
     const getCellClass = (cell) => {
         if (cell) {
@@ -58,11 +100,11 @@ const ChessGame = () => {
             case 'P1':
             case 'P2':
             case 'P3':
-                return deltaX <= 1 && deltaY <= 1; // Pawns move one block in any direction
+                return (deltaX === 1 && deltaY === 0) || (deltaX === 0 && deltaY === 1);
             case 'H1':
-                return (deltaX === 2 && deltaY === 0) || (deltaX === 0 && deltaY === 2); // Hero1 moves two blocks straight
+                return (deltaX === 2 && deltaY === 0) || (deltaX === 0 && deltaY === 2);
             case 'H2':
-                return deltaX === 1 && deltaY === 1; // Hero2 moves one block diagonally
+                return deltaX === 1 && deltaY === 1;
             default:
                 return false;
         }
@@ -76,36 +118,50 @@ const ChessGame = () => {
 
     const handleCellClick = (x, y) => {
         const character = gameState.board[x][y];
-
+    
         if (selectedCharacter) {
             const [fromX, fromY] = findCharacterPosition(selectedCharacter, gameState.board);
-
+    
             if (isValidMove(selectedCharacter, fromX, fromY, x, y)) {
                 const targetCell = gameState.board[x][y];
                 const targetPlayer = targetCell ? targetCell.charAt(0) : null;
-
+    
                 if (targetPlayer === null || targetPlayer !== gameState.currentPlayer) {
                     const newBoard = gameState.board.map(row => row.slice());
-
+    
                     newBoard[fromX][fromY] = null;
                     newBoard[x][y] = selectedCharacter;
-
+    
                     const fromLabel = getLabelForPosition(fromX, fromY);
                     const toLabel = getLabelForPosition(x, y);
-
-                    // Record the move with labels
+    
+                    // Send move to the server
+                    if (socket) {
+                        console.log(`Sending move to server: ${selectedCharacter} from (${fromX}, ${fromY}) to (${x}, ${y})`);
+                        socket.send(JSON.stringify({
+                            type: 'move',
+                            character: selectedCharacter,
+                            fromX,
+                            fromY,
+                            toX: x,
+                            toY: y,
+                            boardState: newBoard,
+                            currentPlayer: gameState.currentPlayer
+                        }));
+                    }
+    
                     setMoveHistory(prevHistory => [
                         ...prevHistory,
                         `Player ${gameState.currentPlayer} moved ${selectedCharacter} from ${fromLabel} to ${toLabel}`
                     ]);
-
+    
                     setGameState(prevState => ({
                         ...prevState,
                         board: newBoard,
                         currentPlayer: prevState.currentPlayer === 'A' ? 'B' : 'A',
                         message: ''
                     }));
-
+    
                     setSelectedCharacter(null);
                 } else {
                     setGameState(prevState => ({
@@ -151,59 +207,65 @@ const ChessGame = () => {
         </div>
     ));
 
+    const handleCreateRoom = () => {
+        const newRoomId = (Math.floor(Math.random() * 100000) + 1).toString();
+        setRoomId(newRoomId);
+        console.log(`Created room with ID: ${newRoomId}`);
+    };
+
     return (
         <div>
             <h1>5x5 Chess Game</h1>
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-                {/* Vertical Labels (1 to 5) */}
-                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', marginRight: '10px' }}>
-                    {['1', '2', '3', '4', '5'].map(label => (
-                        <div key={label} style={{ height: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{label}</div>
-                    ))}
-                </div>
+            
+            <div>
+                <input
+                    type="text"
+                    placeholder="Enter Room ID"
+                    value={roomId}
+                    onChange={(e) => setRoomId(e.target.value)}
+                />
+                <button onClick={handleCreateRoom} disabled={isConnected}>Create Room</button>
+            </div>
 
-                {/* Game Board */}
-                <div id="game-board">
-                    {gameState.board.map((row, rowIndex) => (
-                        <div key={rowIndex} className="board-row">
-                            {row.map((cell, cellIndex) => (
-                                <BoardCell
-                                    key={cellIndex}
-                                    cell={cell}
-                                    rowIndex={rowIndex}
-                                    cellIndex={cellIndex}
-                                />
+            {isConnected ? (
+                <div>
+                    <div style={{ display: 'flex', justifyContent: 'center' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', marginRight: '10px' }}>
+                            {['1', '2', '3', '4', '5'].map(label => (
+                                <div key={label} style={{ height: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{label}</div>
                             ))}
                         </div>
-                    ))}
-                </div>
-            </div>
 
-            {/* Horizontal Labels (A to E) */}
-            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '10px' }}>
-                {['A', 'B', 'C', 'D', 'E'].map(label => (
-                    <div key={label} style={{ width: '50px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{label}</div>
-                ))}
-            </div>
+                        <div id="game-board">
+                            {gameState.board.map((row, rowIndex) => (
+                                <div key={rowIndex} className="board-row">
+                                    {row.map((cell, cellIndex) => (
+                                        <BoardCell
+                                            key={cellIndex}
+                                            cell={cell}
+                                            rowIndex={rowIndex}
+                                            cellIndex={cellIndex}
+                                        />
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
 
-            {/* Error Messages */}
-            {gameState.message && (
-                <div
-                    className={`message ${gameState.message.includes('occupied') ? 'occupied-message' : 'wrong-move-message'}`}
-                >
-                    {gameState.message}
+                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: '10px' }}>
+                        <div>
+                            <p>{gameState.message}</p>
+                            <div>
+                                {moveHistory.map((move, index) => (
+                                    <p key={index}>{move}</p>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
                 </div>
+            ) : (
+                <div>Connecting...</div>
             )}
-
-            {/* Move History */}
-            <div id="move-history">
-                <h2>Move History</h2>
-                <ul>
-                    {moveHistory.map((move, index) => (
-                        <li key={index}>{move}</li>
-                    ))}
-                </ul>
-            </div>
         </div>
     );
 };
